@@ -1,32 +1,44 @@
+use backend::Data;
+use futures::{future, Future};
+use js_sys::Promise;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::future_to_promise;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{Request, RequestInit, RequestMode, Response};
 
-// When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
-// allocator.
-#[cfg(feature = "wee_alloc")]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-// Called by our JS entry point to run the example.
 #[wasm_bindgen]
-pub fn run() -> Result<(), JsValue> {
-    set_panic_hook();
+pub fn run() -> Promise {
+    let mut opts = RequestInit::new();
+    opts.method("GET");
+    opts.mode(RequestMode::Cors);
 
-    let window = web_sys::window().expect("should have a Window");
-    let document = window.document().expect("should have a Document");
+    let request = Request::new_with_str_and_init("http://127.0.0.1:8081/data", &opts).unwrap();
 
-    let p: web_sys::Node = document.create_element("p")?.into();
-    p.set_text_content(Some("Hello from Rust, WebAssembly, and Webpack!"));
+    request.headers().set("Accept", "application/json").unwrap();
 
-    let body = document.body().expect("should have a body");
-    let body: &web_sys::Node = body.as_ref();
-    body.append_child(&p)?;
+    let window = web_sys::window().unwrap();
+    let request_promise = window.fetch_with_request(&request);
 
-    Ok(())
-}
+    let future = JsFuture::from(request_promise)
+        .and_then(|resp_value| {
+            // `resp_value` is a `Response` object.
+            assert!(resp_value.is_instance_of::<Response>());
+            let resp: Response = resp_value.dyn_into().unwrap();
+            resp.json()
+        })
+        .and_then(|json_value: Promise| {
+            // Convert this other `Promise` into a rust `Future`.
+            JsFuture::from(json_value)
+        })
+        .and_then(|json| {
+            // Use serde to parse the JSON into a struct.
+            let data: Data = json.into_serde().unwrap();
 
-fn set_panic_hook() {
-    // When the `console_error_panic_hook` feature is enabled, we can call the
-    // `set_panic_hook` function to get better error messages if we ever panic.
-    #[cfg(feature = "console_error_panic_hook")]
-    console_error_panic_hook::set_once();
+            // Send the `Data` struct back to JS as an `Object`.
+            future::ok(JsValue::from_serde(&data).unwrap())
+        });
+
+    // Convert this Rust `Future` back into a JS `Promise`.
+    future_to_promise(future)
 }
